@@ -1,0 +1,490 @@
+repeat task.wait() until game:IsLoaded()
+
+local Players         = game:GetService("Players")
+local RunService      = game:GetService("RunService")
+local TweenService    = game:GetService("TweenService")
+local UserInputService= game:GetService("UserInputService")
+local HttpService     = game:GetService("HttpService")
+local Workspace       = game:GetService("Workspace")
+
+local plr    = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+-- CONFIG
+
+local Config = {
+    StealRadius          = 20,
+    StealDuration        = 0.2,
+    GalaxyGravityPercent = 70,
+    HopPower             = 35,
+    HopCooldown          = 0.08,
+    AimbotRadius         = 100,
+    BatAimbotSpeed       = 55,
+    SpeedBoost           = 29,
+    LeftPathSpeed        = 58.5,
+    RightPathSpeed       = 58.5,
+    LeftReturnSpeed      = 30.4,
+    RightReturnSpeed     = 30.4,
+}
+
+local Keybinds = {
+    AutoLeft     = Enum.KeyCode.Q,
+    AutoRight    = Enum.KeyCode.E,
+    SpeedBoost   = Enum.KeyCode.R,
+    AutoSteal    = Enum.KeyCode.V,
+    BatAimbot    = Enum.KeyCode.Z,
+    AntiRagdoll  = Enum.KeyCode.X,
+    NoAnimations = Enum.KeyCode.N,
+    Drop         = Enum.KeyCode.F,
+}
+
+-- PALETTE
+
+local C = {
+    Black   = Color3.fromRGB(5,   5,   5),
+    Dark    = Color3.fromRGB(15,  15,  15),
+    Dark2   = Color3.fromRGB(22,  22,  22),
+    Dark3   = Color3.fromRGB(35,  35,  35),
+    White   = Color3.fromRGB(255, 255, 255),
+    Gray    = Color3.fromRGB(180, 180, 180),
+    DimGray = Color3.fromRGB(100, 100, 100),
+    On      = Color3.fromRGB(180, 40,  40),
+    Off     = Color3.fromRGB(40,  40,  40),
+    Accent  = Color3.fromRGB(255, 60,  60),
+    AccentL = Color3.fromRGB(255, 120, 120),
+    Neon    = Color3.fromRGB(255, 30,  30),
+}
+
+-- STATE
+
+local State = {
+    leftActive       = false,
+    rightActive      = false,
+    autoStealEnabled = false,
+    isStealing       = false,
+    stealStartTime   = nil,
+    galaxyEnabled    = false,
+    hopsEnabled      = false,
+    lastHopTime      = 0,
+    spaceHeld        = false,
+    originalJumpPow  = 50,
+    lockedTarget     = nil,
+    changingKeybind  = nil,
+}
+
+local DEFAULTGRAVITY = 196.2
+local MELEEOFFSET    = 3
+
+local toggleStates = {
+    AutoLeft=false, AutoRight=false, SpeedBoost=false,
+    AutoSteal=false, BatAimbot=false, Galaxy=false,
+    Optimizer=false, AntiRagdoll=false, NoAnimations=false,
+    XrayBase=false, PlayerESP=false, TPDown=false, Drop=false,
+}
+
+local savedToggles = {}
+local savedMobile  = false
+
+-- WAYPOINTS
+
+local waypointsRight = {
+    {position=Vector3.new(-474,-7,29),                      isReturn=false},
+    {position=Vector3.new(-473,-7,29),                      isReturn=false},
+    {position=Vector3.new(-478,-6,25),                      isReturn=false},
+    {position=Vector3.new(-488,-5,23),                      isReturn=false},
+    {position=Vector3.new(-488,-5,23),                      isReturn=false},
+    {position=Vector3.new(-474,-7,29),                      isReturn=true},
+    {position=Vector3.new(-474,-7,29),                      isReturn=true},
+    {position=Vector3.new(-473.026947,-7.298133,97.617050), isReturn=true},
+    {position=Vector3.new(-483.267639,-5.341616,97.578979), isReturn=true, isEnd=true},
+}
+
+local waypointsLeft = {
+    {position=Vector3.new(-475,-7,90),                      isReturn=false},
+    {position=Vector3.new(-475,-7,90),                      isReturn=false},
+    {position=Vector3.new(-479,-5,95),                      isReturn=false},
+    {position=Vector3.new(-479,-5,95),                      isReturn=false},
+    {position=Vector3.new(-486,-5,97),                      isReturn=false},
+    {position=Vector3.new(-486,-5,97),                      isReturn=false},
+    {position=Vector3.new(-474.018768,-7.306343,95.489868), isReturn=true},
+    {position=Vector3.new(-474.018768,-7.306343,95.489868), isReturn=true},
+    {position=Vector3.new(-471.452301,-7.303422,26.809414), isReturn=true},
+    {position=Vector3.new(-471.452301,-7.303422,26.809414), isReturn=true},
+    {position=Vector3.new(-483.653137,-5.341625,22.855717), isReturn=true, isEnd=true},
+}
+
+-- SAVE / LOAD
+
+local function saveConfig()
+    pcall(function()
+        local data = {Config=Config, Keybinds={}, Toggles={}, Mobile=false}
+        for k,v in pairs(Keybinds) do if v then data.Keybinds[k]=v.Name end end
+        for k,v in pairs(toggleStates) do data.Toggles[k]=v end
+        writefile("KenshiHubConfig.json", HttpService:JSONEncode(data))
+    end)
+end
+
+local function loadConfig()
+    pcall(function()
+        if isfile("KenshiHubConfig.json") then
+            local data = HttpService:JSONDecode(readfile("KenshiHubConfig.json"))
+            if data.Config   then for k,v in pairs(data.Config)   do Config[k]=v end end
+            if data.Keybinds then for k,v in pairs(data.Keybinds) do Keybinds[k]=Enum.KeyCode[v] end end
+            if data.Toggles  then for k,v in pairs(data.Toggles)  do savedToggles[k]=v end end
+            if data.Mobile   then savedMobile=data.Mobile end
+        end
+    end)
+end
+loadConfig()
+
+-- HELPERS
+
+local function getHRP()
+    local c = plr.Character
+    return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("UpperTorso"))
+end
+
+local function tween(obj, t, props)
+    TweenService:Create(obj, TweenInfo.new(t), props):Play()
+end
+
+-- SPEED LABEL
+
+local speedBB
+
+local function makeSpeedBB()
+    local c = plr.Character if not c then return end
+    local head = c:FindFirstChild("Head") if not head then return end
+    if speedBB then pcall(function() speedBB:Destroy() end) end
+    speedBB = Instance.new("BillboardGui")
+    speedBB.Name = "KenshiSpeedBB"
+    speedBB.Adornee = head
+    speedBB.Size = UDim2.new(0,130,0,30)
+    speedBB.StudsOffset = Vector3.new(0,3.2,0)
+    speedBB.AlwaysOnTop = true
+    speedBB.Parent = head
+    local lbl = Instance.new("TextLabel", speedBB)
+    lbl.Name = "SpeedLbl"
+    lbl.Size = UDim2.new(1,0,1,0)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = C.White
+    lbl.TextStrokeColor3 = C.Accent
+    lbl.TextStrokeTransparency = 0.3
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextScaled = true
+    lbl.Text = "Speed: 0"
+end
+
+RunService.RenderStepped:Connect(function()
+    if not speedBB or not speedBB.Parent then return end
+    local h = getHRP() if not h then return end
+    local lbl = speedBB:FindFirstChild("SpeedLbl") if not lbl then return end
+    local v = h.AssemblyLinearVelocity
+    lbl.Text = "Speed: "..math.floor(Vector3.new(v.X,0,v.Z).Magnitude)
+end)
+
+makeSpeedBB()
+plr.CharacterAdded:Connect(function() task.wait(0.5) makeSpeedBB() end)
+
+-- INF JUMP
+
+local infJumpEnabled = true
+local jumpForce      = 54
+local clampFallSpeed = 80
+
+UserInputService.JumpRequest:Connect(function()
+    if not infJumpEnabled then return end
+    local hrp = getHRP() if not hrp then return end
+    hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, jumpForce, hrp.AssemblyLinearVelocity.Z)
+end)
+
+RunService.Heartbeat:Connect(function()
+    if not infJumpEnabled then return end
+    local hrp = getHRP() if not hrp then return end
+    if hrp.AssemblyLinearVelocity.Y < -clampFallSpeed then
+        hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, -clampFallSpeed, hrp.AssemblyLinearVelocity.Z)
+    end
+end)
+
+-- ANTI-RAGDOLL
+
+local AntiRagdollConns = {}
+
+local function enableAntiRagdoll()
+    if #AntiRagdollConns > 0 then return end
+    local char     = plr.Character or plr.CharacterAdded:Wait()
+    local humanoid = char:WaitForChild("Humanoid")
+    local root     = char:WaitForChild("HumanoidRootPart")
+    local cam      = Workspace.CurrentCamera
+    local animator = humanoid:WaitForChild("Animator")
+    local maxVel   = 40
+    local clampVel = 25
+    local maxClamp = 15
+    local lastVel  = Vector3.new(0,0,0)
+
+    local function isRagdoll()
+        local s = humanoid:GetState()
+        return s==Enum.HumanoidStateType.Physics or s==Enum.HumanoidStateType.Ragdoll
+            or s==Enum.HumanoidStateType.FallingDown or s==Enum.HumanoidStateType.GettingUp
+    end
+
+    local function cleanRagdoll()
+        for ,obj in pairs(char:GetDescendants()) do
+            if obj:IsA("BallSocketConstraint") or obj:IsA("NoCollisionConstraint")
+                or obj:IsA("HingeConstraint")
+                or (obj:IsA("Attachment") and (obj.Name=="A" or obj.Name=="B"))
+                or obj:IsA("BodyVelocity") or obj:IsA("BodyPosition") or obj:IsA("BodyGyro") then
+                obj:Destroy()
+            elseif obj:IsA("Motor6D") then obj.Enabled=true end
+        end
+        for ,track in pairs(animator:GetPlayingAnimationTracks()) do
+            local n = track.Animation and track.Animation.Name:lower() or ""
+            if n:find("rag") or n:find("fall") or n:find("hurt") or n:find("down") then track:Stop(0) end
+        end
+    end
+
+    local function reEnableControls()
+        pcall(function()
+            require(plr:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule")):GetControls():Enable()
+        end)
+    end
+
+    table.insert(AntiRagdollConns, humanoid.StateChanged:Connect(function(,new)
+        if isRagdoll() then
+            humanoid:ChangeState(Enum.HumanoidStateType.Running)
+            cleanRagdoll() cam.CameraSubject=humanoid reEnableControls()
+        end
+    end))
+
+    table.insert(AntiRagdollConns, RunService.Heartbeat:Connect(function()
+        if isRagdoll() then
+            cleanRagdoll()
+            local vel = root.AssemblyLinearVelocity
+            local chg = (vel-lastVel).Magnitude
+            if chg>maxVel and vel.Magnitude>clampVel then
+                root.AssemblyLinearVelocity = vel.Unitmath.min(vel.Magnitude,maxClamp)
+            end
+            lastVel = vel
+        end
+    end))
+
+    table.insert(AntiRagdollConns, char.DescendantAdded:Connect(function()
+        if isRagdoll() then cleanRagdoll() end
+    end))
+
+    table.insert(AntiRagdollConns, plr.CharacterAdded:Connect(function(nc)
+        char=nc humanoid=nc:WaitForChild("Humanoid") root=nc:WaitForChild("HumanoidRootPart")
+        animator=humanoid:WaitForChild("Animator") lastVel=Vector3.new(0,0,0)
+        reEnableControls() cleanRagdoll()
+    end))
+
+    reEnableControls() cleanRagdoll()
+end
+
+local function disableAntiRagdoll()
+    for ,c in pairs(AntiRagdollConns) do c:Disconnect() end
+    AntiRagdollConns = {}
+end
+
+-- PLAYER ESP
+
+local espHighlights = {}
+local espBillboards = {}
+local espConns      = {}
+local espBodyParts  = {}
+
+local BODYPARTS = {
+    "Head","UpperTorso","LowerTorso","Torso",
+    "LeftUpperArm","LeftLowerArm","LeftHand",
+    "RightUpperArm","RightLowerArm","RightHand",
+    "LeftUpperLeg","LeftLowerLeg","LeftFoot",
+    "RightUpperLeg","RightLowerLeg","RightFoot",
+}
+
+local function espRemoveBody(p)
+    if espBodyParts[p] then
+        for ,box in ipairs(espBodyParts[p]) do pcall(function() box:Destroy() end) end
+        espBodyParts[p]=nil
+    end
+end
+
+local function espCreateHighlight(char)
+    local h = Instance.new("Highlight")
+    h.Name="KenshiHubHL" h.Adornee=char
+    h.FillColor=C.Accent h.FillTransparency=0.4
+    h.OutlineColor=C.AccentL h.OutlineTransparency=0
+    h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+    h.Parent=plr:WaitForChild("PlayerGui")
+    return h
+end
+
+local function espCreateBillboard(char, p)
+    local hrp=char:WaitForChild("HumanoidRootPart",5) if not hrp then return nil end
+    local bb=Instance.new("BillboardGui")
+    bb.Name="KenshiHubBB" bb.Adornee=hrp bb.AlwaysOnTop=true
+    bb.Size=UDim2.new(0,110,0,22) bb.StudsOffsetWorldSpace=Vector3.new(0,3.2,0)
+    bb.MaxDistance=600 bb.Parent=plr:WaitForChild("PlayerGui")
+    local bg=Instance.new("Frame",bb)
+    bg.Size=UDim2.new(1,0,1,0) bg.BackgroundColor3=Color3.fromRGB(10,10,10)
+    bg.BackgroundTransparency=0.3 bg.BorderSizePixel=0
+    Instance.new("UICorner",bg).CornerRadius=UDim.new(0,5)
+    local stroke=Instance.new("UIStroke",bg)
+    stroke.Color=C.Accent stroke.Thickness=1 stroke.Transparency=0.3
+    local txt=Instance.new("TextLabel",bg)
+    txt.Size=UDim2.new(1,0,1,0) txt.BackgroundTransparency=1
+    txt.Font=Enum.Font.GothamBold txt.TextSize=12
+    txt.TextColor3=C.White txt.TextStrokeTransparency=0.4
+    txt.Text=p.DisplayName
+    return bb
+end
+
+local function espCreateBody(char, p)
+    espRemoveBody(p)
+    local boxes={} local gui=plr:WaitForChild("PlayerGui")
+    for ,name in ipairs(BODYPARTS) do
+        local part=char:FindFirstChild(name)
+        if part and part:IsA("BasePart") then
+            local box=Instance.new("SelectionBox")
+            box.Adornee=part box.Color3=C.Accent
+            box.LineThickness=0.04 box.SurfaceTransparency=1
+            box.SurfaceColor3=C.Accent box.Parent=gui
+            table.insert(boxes,box)
+        end
+    end
+    espBodyParts[p]=boxes
+end
+
+local function espAttach(p)
+    if p==plr then return end
+    local function apply(char)
+        if espHighlights[p] then pcall(function() espHighlights[p]:Destroy() end) end
+        if espBillboards[p] then pcall(function() espBillboards[p]:Destroy() end) end
+        espHighlights[p]=espCreateHighlight(char)
+        espBillboards[p]=espCreateBillboard(char,p)
+        espCreateBody(char,p)
+    end
+    if p.Character then apply(p.Character) end
+    table.insert(espConns, p.CharacterAdded:Connect(apply))
+end
+
+local function espRemove(p)
+    if espHighlights[p] then pcall(function() espHighlights[p]:Destroy() end) espHighlights[p]=nil end
+    if espBillboards[p] then pcall(function() espBillboards[p]:Destroy() end) espBillboards[p]=nil end
+    espRemoveBody(p)
+end
+
+local function startPlayerESP()
+    for ,p in ipairs(Players:GetPlayers()) do espAttach(p) end
+    table.insert(espConns, Players.PlayerAdded:Connect(espAttach))
+    table.insert(espConns, Players.PlayerRemoving:Connect(espRemove))
+end
+
+local function stopPlayerESP()
+    for ,h in pairs(espHighlights) do pcall(function() h:Destroy() end) end
+    for ,b in pairs(espBillboards) do pcall(function() b:Destroy() end) end
+    for ,c in ipairs(espConns)     do pcall(function() c:Disconnect() end) end
+    for p   in pairs(espBodyParts)  do espRemoveBody(p) end
+    espHighlights={} espBillboards={} espConns={}
+end
+
+-- TP DOWN
+
+local function doTPDown()
+    local r=getHRP()
+    if r then r.CFrame=r.CFrameCFrame.new(0,-20,0) end
+end
+
+-- NO ANIMATIONS
+
+local noAnimConn
+
+local function toggleNoAnimations(state)
+    if noAnimConn then noAnimConn:Disconnect() noAnimConn=nil end
+    if not state then return end
+    local char=plr.Character if not char then return end
+    local hum=char:FindFirstChildOfClass("Humanoid") if not hum then return end
+    local anim=hum:FindFirstChildOfClass("Animator")
+    if anim then for ,t in pairs(anim:GetPlayingAnimationTracks()) do t:Stop() t:AdjustSpeed(0) end end
+    noAnimConn=hum.AnimationPlayed:Connect(function(t) t:Stop() t:AdjustSpeed(0) end)
+end
+
+-- GALAXY MODE
+
+local galaxyVectorForce, galaxyAttachment
+
+local function captureJumpPower()
+    local c=plr.Character if not c then return end
+    local h=c:FindFirstChildOfClass("Humanoid")
+    if h and h.JumpPower>0 then State.originalJumpPow=h.JumpPower end
+end
+task.spawn(function() task.wait(1) captureJumpPower() end)
+plr.CharacterAdded:Connect(function() task.wait(1) captureJumpPower() end)
+
+local function setupGalaxyForce()
+    pcall(function()
+        local c=plr.Character if not c then return end
+        local h=c:FindFirstChild("HumanoidRootPart") if not h then return end
+        if galaxyVectorForce then galaxyVectorForce:Destroy() end
+        if galaxyAttachment  then galaxyAttachment:Destroy()  end
+        galaxyAttachment=Instance.new("Attachment") galaxyAttachment.Parent=h
+        galaxyVectorForce=Instance.new("VectorForce")
+        galaxyVectorForce.Attachment0=galaxyAttachment
+        galaxyVectorForce.ApplyAtCenterOfMass=true
+        galaxyVectorForce.RelativeTo=Enum.ActuatorRelativeTo.World
+        galaxyVectorForce.Force=Vector3.zero
+        galaxyVectorForce.Parent=h
+    end)
+end
+
+local function updateGalaxyForce()
+    if not State.galaxyEnabled or not galaxyVectorForce then return end
+    local c=plr.Character if not c then return end
+    local mass=0
+    for ,p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then mass=mass+p:GetMass() end end
+    local tg=DEFAULTGRAVITY(Config.GalaxyGravityPercent/100)
+    galaxyVectorForce.Force=Vector3.new(0,mass(DEFAULTGRAVITY-tg)0.95,0)
+end
+
+local function adjustGalaxyJump()
+    pcall(function()
+        local c=plr.Character if not c then return end
+        local hum=c:FindFirstChildOfClass("Humanoid") if not hum then return end
+        if not State.galaxyEnabled then hum.JumpPower=State.originalJumpPow return end
+        local ratio=math.sqrt((DEFAULTGRAVITY(Config.GalaxyGravityPercent/100))/DEFAULT_GRAVITY)
+        hum.JumpPower=State.originalJumpPow*ratio
+    end)
+end
+
+local function doMiniHop()
+    if not State.hopsEnabled then return end
+    pcall(function()
+        local c=plr.Character if not c then return end
+        local h=c:FindFirstChild("HumanoidRootPart")
+        local hum=c:FindFirstChildOfClass("Humanoid")
+        if not h or not hum then return end
+        if tick()-State.lastHopTime < Config.HopCooldown then return end
+        State.lastHopTime=tick()
+        if hum.FloorMaterial==Enum.Material.Air then
+            h.AssemblyLinearVelocity=Vector3.new(h.AssemblyLinearVelocity.X,Config.HopPower,h.AssemblyLinearVelocity.Z)
+        end
+    end)
+end
+
+local function startGalaxy()
+    State.galaxyEnabled=true State.hopsEnabled=true
+    setupGalaxyForce() adjustGalaxyJump()
+end
+
+local function stopGalaxy()
+    State.galaxyEnabled=false State.hopsEnabled=false
+    if galaxyVectorForce then galaxyVectorForce:Destroy() galaxyVectorForce=nil end
+    if galaxyAttachment  then galaxyAttachment:Destroy()  galaxyAttachment=nil  end
+    adjustGalaxyJump()
+end
+
+RunService.Heartbeat:Connect(function()
+    if State.hopsEnabled and State.spaceHeld then doMiniHop() end
+    if State.galaxyEnabled then updateGalaxyForce() end
+end)
+
+UserInputService.InputEnded:Connect(function(i)
